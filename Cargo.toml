@@ -1,0 +1,40 @@
+[package]
+name = "trackcrab"
+version = "0.1.0"
+edition = "2024"
+description = "TrackCrab, a local-only nested task tracker"
+readme = "README.md"
+
+[dependencies]
+eframe = { version = "0.36", default-features = false, features = [
+    "default_fonts",
+    "glow",
+    "wayland",
+    "x11",
+] }
+egui = "0.36"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+directories = "6"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+
+[dev-dependencies]
+# Official egui test harness. Version tracks egui exactly.
+egui_kittest = "0.36"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Every fallible fn here returns a self describing TreeError or StoreError.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

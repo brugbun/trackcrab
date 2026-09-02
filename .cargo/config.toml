@@ -1,0 +1,12 @@
+# Cross-compiling to Windows from WSL.
+#   rustup target add x86_64-pc-windows-gnu
+#   Arch:   pacman -S mingw-w64-gcc
+#   Debian: apt install mingw-w64
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
+rustflags = [
+    # mingw emits noisy `corrupt .drectve` warnings on some crates. Harmless,
+    # but keep the link quiet so real errors stand out.
+    "-C", "link-arg=-Wl,--no-insert-timestamp",
+]

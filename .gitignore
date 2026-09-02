@@ -1,0 +1,83 @@
+# Build output. Anchored, so a source directory that happens to be called
+# "target" further down would still be tracked.
+/target
+
+# Loose binaries, from copying a build out of target/ to try it.
+/*.exe
+/*.pdb
+
+# TrackCrab's own data, for when TRACKCRAB_DATA is pointed at the checkout to
+# share one file between a WSL build and a Windows build. Anchored to the root
+# so a fixture named data.json inside tests/ would still be tracked.
+/data.json
+/settings.json
+# Quarantined data files, written when a store could not be parsed.
+*.corrupt.*.json
+
+# The generated window icon, dumped by `cargo run --example render_icon`.
+/icon.ppm
+/icon.png
+
+# Coverage and profiling.
+*.profraw
+*.profdata
+/lcov.info
+/cobertura.xml
+/coverage/
+/tarpaulin-report.*
+flamegraph.svg
+perf.data
+perf.data.old
+
+# Editors and tooling. Personal setup, not project setup.
+.vscode/
+.idea/
+*.iml
+rust-project.json
+.direnv/
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+*.rs.bk
+
+# Patch and merge leftovers.
+*.orig
+*.rej
+*.bak
+*.tmp
+
+# Logs.
+*.log
+
+# Credentials. Nothing here needs any, which is exactly when one gets committed
+# by accident.
+.env
+.env.*
+*.pem
+*.p12
+*.pfx
+!.env.example
+
+# OS and cloud sync droppings. This checkout lives in OneDrive, so its
+# placeholder and conflict files turn up in the working tree.
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+~$*
+
+# Scratch, from clearing stale git locks.
+/_to_delete/
+
+# Deliberately NOT ignored, so nobody "tidies" them away:
+#   Cargo.lock          - this is a binary, so the exact dependency set is part
+#                         of the build being reproducible.
+#   .cargo/config.toml  - the Windows cross-compile linker setup. Without it
+#                         `make windows` does not work.
+#   rust-toolchain.toml - pins the toolchain the project is known to build on.
