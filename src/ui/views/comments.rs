@@ -162,11 +162,20 @@ fn body(ui: &mut Ui, tree: &mut Tree, folder: NodeId, index: usize, report: &mut
         ui.available_width(),
         (ui.available_height() - footer).max(metric::ROW_HEIGHT * 2.0),
     );
-    let body_response = ui.add_sized(
-        body_size,
-        egui::TextEdit::multiline(&mut text)
-            .hint_text("Anything that shapes this whole project")
-            .frame(egui::Frame::NONE),
+    let body_response = crate::ui::text::edit(
+        ui,
+        &crate::ui::text::Field {
+            id: egui::Id::new("trackcrab_comment_body"),
+            hint: "Anything that shapes this whole project",
+            rows: None,
+            frame: false,
+            size: Some(body_size),
+            // The notebook is the one field with a fixed box, so it is the one
+            // field whose text can run off the bottom of it.
+            scroll: true,
+            toolbar: true,
+        },
+        &mut text,
     );
 
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -1,7 +1,11 @@
+pub mod blocks;
 pub mod dialogs;
 pub mod rows;
+pub mod search;
 pub mod sidebar;
+pub mod text;
 pub mod theme;
+pub mod toolbar;
 pub mod views;
 
 use eframe::egui::Id;
@@ -132,38 +136,35 @@ impl Filter {
         *self = Self::default();
     }
 
+    /// The search text, ready to match: trimmed and lowercased. Empty means no
+    /// text filtering at all.
+    ///
+    /// Computed once per pass and handed down, rather than by each matcher for
+    /// itself: the old shape allocated a fresh lowercased copy of the needle
+    /// for every node in the tree, every frame.
+    #[must_use]
+    pub fn needle(&self) -> String {
+        self.text.trim().to_lowercase()
+    }
+
     /// Does this task pass on its own merits?
-    fn matches_task(&self, task: &crate::model::Task) -> bool {
+    fn matches_task(&self, task: &crate::model::Task, needle: &str) -> bool {
         // Nothing picked out means no status filtering, not "hide everything".
         if self.any_status_selected() && !self.statuses[task.status.ordinal() as usize] {
             return false;
         }
-        let needle = self.text.trim().to_lowercase();
         if needle.is_empty() {
             return true;
         }
-        task.title.to_lowercase().contains(&needle)
+        // The title is a single line field and carries no markdown, so it is
+        // matched as typed. The other two are markdown, so they are matched as
+        // read.
+        task.title.to_lowercase().contains(needle)
             || task
                 .description
                 .as_deref()
-                .is_some_and(|d| d.to_lowercase().contains(&needle))
-            || task.notes.to_lowercase().contains(&needle)
-    }
-
-    /// Does this folder pass on its own name or on anything written in its
-    /// comments? A folder is also kept when something beneath it passes, which
-    /// [`visible`] works out.
-    ///
-    /// Comments count because they are where a project's broader context lives:
-    /// searching for the customer's name should find the folder whose kickoff
-    /// note mentions them, not only folders named after them.
-    fn matches_folder(&self, folder: &crate::model::Folder) -> bool {
-        let needle = self.text.trim().to_lowercase();
-        if needle.is_empty() {
-            return false;
-        }
-        folder.name.to_lowercase().contains(&needle)
-            || folder.comments.iter().any(|space| space.matches(&needle))
+                .is_some_and(|body| search::mentions(body, needle))
+            || search::mentions(&task.notes, needle)
     }
 
     /// Which comment space in this folder the current text first matches.
@@ -172,15 +173,43 @@ impl Filter {
     /// folder with a dozen spaces does not leave you cycling to find the match.
     #[must_use]
     pub fn matching_space(&self, folder: &crate::model::Folder) -> Option<usize> {
-        let needle = self.text.trim().to_lowercase();
+        let needle = self.needle();
         if needle.is_empty() {
             return None;
         }
         folder
             .comments
             .iter()
-            .position(|space| space.matches(&needle))
+            .position(|space| mentions(space, &needle))
     }
+}
+
+/// Does this folder pass on its own name or on anything written in its
+/// comments? A folder is also kept when something beneath it passes, which
+/// [`visible`] works out.
+///
+/// Comments count because they are where a project's broader context lives:
+/// searching for the customer's name should find the folder whose kickoff note
+/// mentions them, not only folders named after them.
+///
+/// Free standing rather than a method, unlike its task counterpart, because it
+/// has nothing to ask the filter beyond the needle: the status flags describe
+/// tasks, and a folder has no status to pass or fail on.
+fn matches_folder(folder: &crate::model::Folder, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    folder.name.to_lowercase().contains(needle)
+        || folder.comments.iter().any(|space| mentions(space, needle))
+}
+
+/// Does this comment space mention `needle`?
+///
+/// The title is typed straight into a one line field and carries no markdown;
+/// the body is markdown, so it is matched as it reads rather than as it is
+/// stored.
+fn mentions(space: &crate::model::CommentSpace, needle: &str) -> bool {
+    space.title.to_lowercase().contains(needle) || search::mentions(&space.body, needle)
 }
 
 /// The set of nodes the sidebar should draw under a filter.
@@ -194,8 +223,9 @@ pub fn visible(tree: &Tree, filter: &Filter) -> Option<std::collections::HashSet
         return None;
     }
     let mut keep = std::collections::HashSet::new();
+    let needle = filter.needle();
     for root in tree.roots() {
-        retain(tree, *root, filter, &mut keep);
+        retain(tree, *root, filter, &needle, &mut keep);
     }
     Some(keep)
 }
@@ -205,20 +235,21 @@ fn retain(
     tree: &Tree,
     id: NodeId,
     filter: &Filter,
+    needle: &str,
     keep: &mut std::collections::HashSet<NodeId>,
 ) -> bool {
     let Some(node) = tree.get(id) else {
         return false;
     };
     let mut kept = match &node.kind {
-        crate::model::NodeKind::Task(task) => filter.matches_task(task),
-        crate::model::NodeKind::Folder(folder) => filter.matches_folder(folder),
+        crate::model::NodeKind::Task(task) => filter.matches_task(task, needle),
+        crate::model::NodeKind::Folder(folder) => matches_folder(folder, needle),
     };
     if let Some(folder) = node.as_folder() {
         for child in &folder.children {
             // Every child is walked, not short circuited, so the whole matching
             // subtree ends up in the set rather than just the first branch.
-            if retain(tree, *child, filter, keep) {
+            if retain(tree, *child, filter, needle, keep) {
                 kept = true;
             }
         }

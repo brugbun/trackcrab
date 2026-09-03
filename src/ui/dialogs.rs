@@ -293,10 +293,17 @@ fn new_task_body(
             .small()
             .color(color::TEXT_FAINT),
     );
-    let description_box = ui.add(
-        egui::TextEdit::multiline(description)
-            .desired_rows(3)
-            .desired_width(f32::INFINITY),
+    let description_box = crate::ui::text::edit(
+        ui,
+        &crate::ui::text::Field {
+            id: egui::Id::new("trackcrab_new_task_description"),
+            rows: Some(3),
+            // No bar here. The dialog is a quick-entry form and already tall,
+            // and the shortcuts still work, so the syntax is not out of reach.
+            toolbar: false,
+            ..crate::ui::text::Field::default()
+        },
+        description,
     );
     ui.add_space(8.0);
 

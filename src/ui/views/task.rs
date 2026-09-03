@@ -6,6 +6,7 @@ use egui::containers::collapsing_header::CollapsingState;
 use crate::model::{NodeId, Status, Tree};
 use crate::ui::local_stamp;
 use crate::ui::rows;
+use crate::ui::text;
 use crate::ui::theme::{self, color, metric};
 
 /// Editable buffers for one task.
@@ -205,11 +206,15 @@ fn header(ui: &mut Ui, tree: &mut Tree, editor: &mut Editor) -> bool {
 }
 
 fn description(ui: &mut Ui, tree: &mut Tree, editor: &mut Editor) -> bool {
-    let response = ui.add(
-        egui::TextEdit::multiline(&mut editor.description)
-            .desired_rows(4)
-            .hint_text("Optional")
-            .desired_width(f32::INFINITY),
+    let response = text::edit(
+        ui,
+        &text::Field {
+            id: egui::Id::new("trackcrab_description"),
+            hint: "Optional",
+            rows: Some(4),
+            ..text::Field::default()
+        },
+        &mut editor.description,
     );
     if response.changed() {
         editor.commit(tree);
@@ -223,11 +228,15 @@ fn description(ui: &mut Ui, tree: &mut Tree, editor: &mut Editor) -> bool {
 /// Sits under the status, so the screen reads top to bottom as what the task is,
 /// where it stands, and then what you know about it.
 fn notes(ui: &mut Ui, tree: &mut Tree, editor: &mut Editor) -> bool {
-    let response = ui.add(
-        egui::TextEdit::multiline(&mut editor.notes)
-            .desired_rows(5)
-            .hint_text("Anything worth remembering about this task")
-            .desired_width(f32::INFINITY),
+    let response = text::edit(
+        ui,
+        &text::Field {
+            id: egui::Id::new("trackcrab_notes"),
+            hint: "Anything worth remembering about this task",
+            rows: Some(5),
+            ..text::Field::default()
+        },
+        &mut editor.notes,
     );
     if response.changed() {
         editor.commit(tree);

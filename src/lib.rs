@@ -5,6 +5,7 @@
 
 pub mod app;
 pub mod icon;
+pub mod markdown;
 pub mod model;
 pub mod store;
 pub mod ui;

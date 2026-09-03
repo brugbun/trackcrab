@@ -1271,21 +1271,23 @@ fn chord(harness: &mut Harness<'_, App>, modifiers: Modifiers, key: Key) {
 }
 
 #[test]
-fn ctrl_b_toggles_the_sidebar() {
+fn ctrl_b_no_longer_touches_the_sidebar() {
+    // Freed for bold. Ctrl+Right already opened the folder tree, so the binding
+    // was doing a job something else already did, and the ambiguity with the
+    // universal bold chord was not worth keeping.
     let mut harness = harness();
     assert!(harness.query_all_by_label("Work").next().is_none());
 
     chord(&mut harness, Modifiers::CTRL, Key::B);
     assert!(
-        harness.query_all_by_label("Work").next().is_some(),
-        "Ctrl+B should open the sidebar"
-    );
-
-    chord(&mut harness, Modifiers::CTRL, Key::B);
-    assert!(
         harness.query_all_by_label("Work").next().is_none(),
-        "Ctrl+B should close it again"
+        "Ctrl+B should no longer open the sidebar"
     );
+    assert_eq!(harness.state().panel(), Panel::None);
+
+    // The replacement still works.
+    chord(&mut harness, Modifiers::CTRL, Key::ArrowRight);
+    assert_eq!(harness.state().panel(), Panel::Folders);
 }
 
 #[test]
@@ -2015,11 +2017,11 @@ fn comments_follow_the_folder_holding_an_open_task() {
 }
 
 #[test]
-fn ctrl_b_still_toggles_the_folder_tree() {
+fn the_directional_keys_are_the_only_way_to_move_the_panels() {
     let mut harness = harness();
-    chord(&mut harness, Modifiers::CTRL, Key::B);
+    chord(&mut harness, Modifiers::CTRL, Key::ArrowRight);
     assert_eq!(harness.state().panel(), Panel::Folders);
-    chord(&mut harness, Modifiers::CTRL, Key::B);
+    chord(&mut harness, Modifiers::CTRL, Key::ArrowRight);
     assert_eq!(harness.state().panel(), Panel::None);
 }
 
@@ -2913,4 +2915,1323 @@ fn following_the_cursor_does_not_drag_the_tree_sideways() {
         (before - after).abs() < 1.0,
         "the tree scrolled sideways from {before:.0} to {after:.0}, so root labels are cut off"
     );
+}
+
+// --------------------------------------------------- markdown rendering (D2)
+
+/// A document using every feature the parser knows, for exercising the real
+/// widget rather than the pure layout function.
+const RICH: &str = "# Heading\n\
+     **bold** *italic* __under__ ~~gone~~ `code`\n\
+     - [x] done\n\
+       - nested\n\
+     1. numbered\n\
+     ==yellow|marked== ==#f2c14e|hex==\n\
+     [label](https://example.com) https://bare.example.com\n\
+     ---\n\
+     ```rust\n\
+     let x = *p;\n\
+     ```\n\
+     escaped \\*star\\*";
+
+#[test]
+fn a_rich_document_renders_without_desyncing_the_caret() {
+    // `text::layout` carries a debug assertion that the job's text matches the
+    // source byte for byte, because a TextEdit maps caret positions through the
+    // galley. Rendering the document through the real widget in a debug build
+    // is therefore a live check of that invariant, which no pure test can be:
+    // it is the wiring, not the function, being exercised.
+    let mut harness = harness();
+    let personal = open_notebook(&mut harness, "Personal");
+    harness
+        .state_mut()
+        .tree_mut()
+        .edit_comment_space(personal, 0, |space| space.body = RICH.to_owned())
+        .unwrap();
+    settle(&mut harness);
+
+    assert_eq!(
+        harness.state().tree().comment_spaces(personal)[0].body,
+        RICH,
+        "rendering must not rewrite the source"
+    );
+}
+
+#[test]
+fn typing_markdown_stores_exactly_what_was_typed() {
+    // The layouter must never edit the buffer. If it did, typing `**` would
+    // fight the renderer and characters would go missing.
+    let mut harness = harness();
+    let personal = open_notebook(&mut harness, "Personal");
+
+    harness.get_by_role(Role::MultilineTextInput).focus();
+    harness.run();
+    let typed = "## Notes with **bold** and `code` and ==blue|mark==";
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text(typed);
+    settle(&mut harness);
+
+    assert_eq!(
+        harness.state().tree().comment_spaces(personal)[0].body,
+        typed
+    );
+}
+
+#[test]
+fn markdown_in_a_task_note_round_trips_through_the_disk() {
+    let mut harness = harness();
+    open_task(&mut harness, "Land the VPC design");
+    let id = match harness.state().view() {
+        View::Task(id) => *id,
+        other => panic!("expected a task, got {other:?}"),
+    };
+    harness
+        .state_mut()
+        .tree_mut()
+        .edit_task(id, |task| task.notes = RICH.to_owned())
+        .unwrap();
+    settle(&mut harness);
+    harness.state_mut().save_now();
+
+    let path = harness.state().data_path().to_path_buf();
+    let restarted = App::new(DataStore::at(&path));
+    assert_eq!(
+        restarted.tree().task(id).unwrap().notes,
+        RICH,
+        "markdown is stored as plain text, so it must survive verbatim"
+    );
+}
+
+#[test]
+fn a_description_renders_markdown_too() {
+    // Kyle asked for descriptions alongside notes and comments. Leaving one of
+    // the three plain would read as an oversight.
+    let mut harness = harness();
+    open_task(&mut harness, "Land the VPC design");
+    let id = match harness.state().view() {
+        View::Task(id) => *id,
+        other => panic!("expected a task, got {other:?}"),
+    };
+    harness
+        .state_mut()
+        .tree_mut()
+        .edit_task(id, |task| task.set_description(RICH.to_owned()))
+        .unwrap();
+    settle(&mut harness);
+
+    assert_eq!(
+        harness
+            .state()
+            .tree()
+            .task(id)
+            .unwrap()
+            .description
+            .as_deref(),
+        Some(RICH)
+    );
+}
+
+// ------------------------------------------------ markdown editing keys (D5)
+
+/// Focuses the notebook body and returns the folder holding it.
+fn notebook_body(harness: &mut Harness<'_, App>, seed: &str) -> trackcrab::model::NodeId {
+    let folder = open_notebook(harness, "Personal");
+    harness
+        .state_mut()
+        .tree_mut()
+        .edit_comment_space(folder, 0, |space| seed.clone_into(&mut space.body))
+        .unwrap();
+    settle(harness);
+    harness.get_by_role(Role::MultilineTextInput).focus();
+    harness.run();
+    folder
+}
+
+fn body_of(harness: &Harness<'_, App>, folder: trackcrab::model::NodeId) -> String {
+    harness.state().tree().comment_spaces(folder)[0]
+        .body
+        .clone()
+}
+
+#[test]
+fn tab_indents_a_list_item_through_the_real_widget() {
+    // The pure tests cover the transformation. This covers the wiring: the key
+    // has to be consumed before the widget sees it, or Tab moves focus instead.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- one\n- two");
+    // Caret to the end of the second item.
+    press(&mut harness, Key::End);
+    press(&mut harness, Key::Tab);
+
+    assert_eq!(body_of(&harness, folder), "- one\n  - two");
+}
+
+#[test]
+fn tab_does_not_move_focus_out_of_a_markdown_field() {
+    // egui uses Tab for focus by default. Consuming it first is what makes it
+    // indent, and it means Escape is now the way out of a field.
+    let mut harness = harness();
+    notebook_body(&mut harness, "- one\n- two");
+    assert!(harness.get_by_role(Role::MultilineTextInput).is_focused());
+    press(&mut harness, Key::Tab);
+    assert!(
+        harness.get_by_role(Role::MultilineTextInput).is_focused(),
+        "Tab moved focus out of the field instead of indenting"
+    );
+}
+
+#[test]
+fn shift_tab_outdents_rather_than_indenting() {
+    // Checked before plain Tab, or the plainer chord swallows it.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- one\n  - two");
+    press(&mut harness, Key::End);
+    chord(&mut harness, Modifiers::SHIFT, Key::Tab);
+
+    assert_eq!(body_of(&harness, folder), "- one\n- two");
+}
+
+#[test]
+fn enter_continues_a_list_through_the_real_widget() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- one");
+    press(&mut harness, Key::End);
+    press(&mut harness, Key::Enter);
+
+    assert_eq!(body_of(&harness, folder), "- one\n- ");
+}
+
+#[test]
+fn enter_twice_leaves_the_list_rather_than_stacking_empty_items() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- one");
+    press(&mut harness, Key::End);
+    press(&mut harness, Key::Enter);
+    press(&mut harness, Key::Enter);
+
+    assert_eq!(
+        body_of(&harness, folder),
+        "- one\n",
+        "the second Enter should have removed the empty marker"
+    );
+}
+
+#[test]
+fn enter_in_prose_still_inserts_a_plain_newline() {
+    // The Option the edit functions return exists for this: declining hands the
+    // key back to egui, so everything that is not a list behaves as before.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "plain");
+    press(&mut harness, Key::End);
+    press(&mut harness, Key::Enter);
+
+    assert_eq!(body_of(&harness, folder), "plain\n");
+}
+
+#[test]
+fn backspace_after_a_marker_strips_it_through_the_real_widget() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- one");
+    press(&mut harness, Key::Home);
+    // Home lands before the marker, so step past it.
+    for _ in 0..2 {
+        press(&mut harness, Key::ArrowRight);
+    }
+    press(&mut harness, Key::Backspace);
+
+    assert_eq!(body_of(&harness, folder), "one");
+}
+
+#[test]
+fn backspace_mid_word_still_deletes_a_character() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- one");
+    press(&mut harness, Key::End);
+    press(&mut harness, Key::Backspace);
+
+    assert_eq!(body_of(&harness, folder), "- on");
+}
+
+#[test]
+fn an_edit_made_behind_the_widget_still_reaches_the_disk() {
+    // The buffer is changed without the widget knowing, so `changed()` has to
+    // be raised by hand or nothing would ever be saved.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- one");
+    press(&mut harness, Key::End);
+    press(&mut harness, Key::Enter);
+    settle(&mut harness);
+    harness.state_mut().save_now();
+
+    let path = harness.state().data_path().to_path_buf();
+    let restarted = App::new(DataStore::at(&path));
+    assert_eq!(
+        restarted.tree().comment_spaces(folder)[0].body,
+        "- one\n- ",
+        "the edit was not marked as a change, so it was never saved"
+    );
+}
+
+#[test]
+fn escape_is_the_way_out_of_a_markdown_field() {
+    // Tab no longer leaves, so this is the replacement, and it is egui's own
+    // behaviour rather than anything added here.
+    let mut harness = harness();
+    notebook_body(&mut harness, "- one");
+    assert!(harness.get_by_role(Role::MultilineTextInput).is_focused());
+    press(&mut harness, Key::Escape);
+    assert!(
+        !harness.get_by_role(Role::MultilineTextInput).is_focused(),
+        "Escape should have surrendered focus"
+    );
+}
+
+#[test]
+fn a_task_note_gets_the_same_keys() {
+    // All four fields go through one wrapper, so this is really asserting that
+    // the wrapper is what they all use.
+    let mut harness = harness();
+    open_task(&mut harness, "Land the VPC design");
+    let id = match harness.state().view() {
+        View::Task(id) => *id,
+        other => panic!("expected a task, got {other:?}"),
+    };
+    settle(&mut harness);
+    // Typed rather than written into the tree: the detail view keeps its own
+    // buffer and only reloads it when the view moves, so poking the tree behind
+    // it would be overwritten by the next commit.
+    notes_box(&harness).focus();
+    harness.run();
+    notes_box(&harness).type_text("- one");
+    settle(&mut harness);
+    press(&mut harness, Key::End);
+    press(&mut harness, Key::Enter);
+
+    assert_eq!(harness.state().tree().task(id).unwrap().notes, "- one\n- ");
+}
+
+#[test]
+fn a_whole_list_can_be_typed_without_writing_a_single_marker() {
+    // The end to end shape of D5, and the one test that would catch any of the
+    // four keys regressing. Only the *first* marker of each list is typed; every
+    // other one is produced by Enter, Tab or Shift+Tab.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+
+    let write = |harness: &mut Harness<'_, App>, text: &str| {
+        harness
+            .get_by_role(Role::MultilineTextInput)
+            .type_text(text);
+        settle(harness);
+    };
+
+    write(&mut harness, "# Shopping");
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "- milk");
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "bread");
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "flour");
+    press(&mut harness, Key::Tab);
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "plain");
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "wholemeal");
+    chord(&mut harness, Modifiers::SHIFT, Key::Tab);
+    // Twice: the first continues the list, the second leaves it.
+    press(&mut harness, Key::Enter);
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "1. first");
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "second");
+    press(&mut harness, Key::Enter);
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "- [ ] pay rent");
+    press(&mut harness, Key::Enter);
+    write(&mut harness, "call mum");
+
+    assert_eq!(
+        body_of(&harness, folder),
+        "# Shopping\n\
+         - milk\n\
+         - bread\n\
+         \u{20}\u{20}- flour\n\
+         \u{20}\u{20}- plain\n\
+         - wholemeal\n\
+         1. first\n\
+         2. second\n\
+         - [ ] pay rent\n\
+         - [ ] call mum"
+    );
+}
+
+// -------------------------------------------- toolbar and shortcuts (D6)
+
+/// Selects everything in the focused field.
+///
+/// `Modifiers::COMMAND` rather than `CTRL`: egui's own select-all checks the
+/// `command` flag, which the platform layer sets from Ctrl but a synthesised
+/// event does not. The app's own chords use `CTRL`, matching every other
+/// shortcut in it, so the two appear side by side in these tests.
+fn select_all(harness: &mut Harness<'_, App>) {
+    chord(harness, Modifiers::COMMAND, Key::A);
+}
+
+/// A toolbar button in the notebook, by its accessibility label.
+fn toolbar_button<'t>(harness: &'t Harness<'_, App>, label: &'t str) -> Node<'t> {
+    notebook(harness, label).get_by_label(label)
+}
+
+#[test]
+fn ctrl_b_bolds_the_selection() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("loud");
+    settle(&mut harness);
+    // Select it all.
+    select_all(&mut harness);
+    chord(&mut harness, Modifiers::CTRL, Key::B);
+
+    assert_eq!(body_of(&harness, folder), "**loud**");
+}
+
+#[test]
+fn ctrl_b_again_takes_the_bold_off() {
+    // The selection is kept after wrapping precisely so the chord toggles.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("loud");
+    settle(&mut harness);
+    select_all(&mut harness);
+    chord(&mut harness, Modifiers::CTRL, Key::B);
+    chord(&mut harness, Modifiers::CTRL, Key::B);
+
+    assert_eq!(body_of(&harness, folder), "loud");
+}
+
+#[test]
+fn ctrl_i_and_ctrl_u_work_the_same_way() {
+    for (key, expected) in [(Key::I, "*x*"), (Key::U, "__x__")] {
+        let mut harness = harness();
+        let folder = notebook_body(&mut harness, "");
+        harness.get_by_role(Role::MultilineTextInput).type_text("x");
+        settle(&mut harness);
+        select_all(&mut harness);
+        chord(&mut harness, Modifiers::CTRL, key);
+        assert_eq!(body_of(&harness, folder), expected, "{key:?}");
+    }
+}
+
+#[test]
+fn the_bold_button_does_what_the_chord_does() {
+    // Both route through one function, so this is really asserting that the
+    // toolbar is wired to it rather than to a second implementation.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("loud");
+    settle(&mut harness);
+    select_all(&mut harness);
+
+    toolbar_button(&harness, "Bold").click();
+    settle(&mut harness);
+    assert_eq!(body_of(&harness, folder), "**loud**");
+}
+
+#[test]
+fn the_list_buttons_apply_and_remove_their_markers() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("item");
+    settle(&mut harness);
+
+    // The list icons are painted, so they are reached by their tooltips.
+    toolbar_button(&harness, "Bulleted list").click();
+    settle(&mut harness);
+    assert_eq!(body_of(&harness, folder), "- item");
+
+    toolbar_button(&harness, "Bulleted list").click();
+    settle(&mut harness);
+    assert_eq!(
+        body_of(&harness, folder),
+        "item",
+        "the button should toggle"
+    );
+
+    toolbar_button(&harness, "Checklist").click();
+    settle(&mut harness);
+    assert_eq!(body_of(&harness, folder), "- [ ] item");
+}
+
+#[test]
+fn the_divider_and_code_block_buttons_work() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("above");
+    settle(&mut harness);
+
+    toolbar_button(&harness, "Divider").click();
+    settle(&mut harness);
+    assert_eq!(body_of(&harness, folder), "above\n---\n");
+
+    toolbar_button(&harness, "Code block").click();
+    settle(&mut harness);
+    assert_eq!(body_of(&harness, folder), "above\n---\n```\n\n```");
+}
+
+#[test]
+fn the_link_button_leaves_the_caret_where_the_address_goes() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("the docs");
+    settle(&mut harness);
+    select_all(&mut harness);
+
+    toolbar_button(&harness, "Link").click();
+    settle(&mut harness);
+    assert_eq!(body_of(&harness, folder), "[the docs]()");
+
+    // The caret is inside the parentheses, so typing an address lands there.
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("https://example.com");
+    settle(&mut harness);
+    assert_eq!(body_of(&harness, folder), "[the docs](https://example.com)");
+}
+
+#[test]
+fn a_toolbar_click_hands_focus_back_to_the_field() {
+    // Otherwise every button press would need a click back into the text before
+    // you could carry on typing.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness.get_by_role(Role::MultilineTextInput).type_text("x");
+    settle(&mut harness);
+
+    toolbar_button(&harness, "Bulleted list").click();
+    settle(&mut harness);
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("yz");
+    settle(&mut harness);
+
+    assert_eq!(
+        body_of(&harness, folder),
+        "- xyz",
+        "typing after a button press should continue in the field"
+    );
+}
+
+#[test]
+fn the_new_task_dialog_has_no_formatting_bar() {
+    // It is a quick-entry form and already tall. The shortcuts still work
+    // there, so the syntax is not out of reach.
+    let mut harness = harness();
+    toggle_sidebar(&mut harness);
+    open_acme(&mut harness);
+    harness.get_by_label("+ Task").click();
+    settle(&mut harness);
+
+    assert!(
+        harness.query_by_label("Bulleted list").is_none(),
+        "the dialog should not carry a toolbar"
+    );
+}
+
+#[test]
+fn ctrl_n_no_longer_fires_while_writing_a_note() {
+    // It was checked before the typing guard, so a Ctrl+N halfway through a
+    // note created a task.
+    let mut harness = harness();
+    toggle_sidebar(&mut harness);
+    open_acme(&mut harness);
+    let acme = match harness.state().view() {
+        View::Folder(id) => *id,
+        other => panic!("expected a folder, got {other:?}"),
+    };
+    let before = harness.state().tree().children(Some(acme)).unwrap().len();
+
+    chord(&mut harness, Modifiers::CTRL, Key::ArrowLeft);
+    harness.get_by_role(Role::MultilineTextInput).focus();
+    harness.run();
+    chord(&mut harness, Modifiers::CTRL, Key::N);
+
+    assert_eq!(
+        harness.state().tree().children(Some(acme)).unwrap().len(),
+        before,
+        "Ctrl+N should not have created a task while the caret was in a note"
+    );
+}
+
+#[test]
+fn ctrl_n_still_works_when_nothing_is_focused() {
+    let mut harness = harness();
+    toggle_sidebar(&mut harness);
+    open_acme(&mut harness);
+    let acme = match harness.state().view() {
+        View::Folder(id) => *id,
+        other => panic!("expected a folder, got {other:?}"),
+    };
+    let before = harness.state().tree().children(Some(acme)).unwrap().len();
+
+    chord(&mut harness, Modifiers::CTRL, Key::N);
+    assert_eq!(
+        harness.state().tree().children(Some(acme)).unwrap().len(),
+        before + 1
+    );
+}
+
+// ------------------------------------------------- clicks and paste (D7)
+
+/// Any URL egui was asked to open on the most recent frame.
+///
+/// Read per frame rather than after settling: the platform output is replaced
+/// every frame, so a command issued on the click frame is long gone by the time
+/// a `run` loop has finished.
+fn opened(harness: &Harness<'_, App>) -> Option<String> {
+    harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            eframe::egui::OutputCommand::OpenUrl(open) => Some(open.url.clone()),
+            _ => None,
+        })
+}
+
+/// Clicks with a modifier genuinely held down, returning any URL that opened.
+///
+/// The modifier goes on as its own event rather than only on the button, because
+/// that is how egui tracks it: `InputState::modifiers` is moved by
+/// `ModifiersChanged` and by nothing else, and the hover branch reads the live
+/// state, exactly as it does under a real hand.
+fn click_at_with(
+    harness: &mut Harness<'_, App>,
+    pos: Pos2,
+    modifiers: Modifiers,
+) -> Option<String> {
+    harness
+        .input_mut()
+        .events
+        .push(Event::ModifiersChanged(modifiers));
+    harness.input_mut().events.push(Event::PointerMoved(pos));
+    for pressed in [true, false] {
+        harness.input_mut().events.push(Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers,
+        });
+    }
+    let mut found = None;
+    for _ in 0..SETTLE {
+        harness.step();
+        found = found.or_else(|| opened(harness));
+    }
+    harness
+        .input_mut()
+        .events
+        .push(Event::ModifiersChanged(Modifiers::default()));
+    harness.run();
+    found
+}
+
+/// The middle of the gutter on a field's first line, which is where a checkbox
+/// is drawn.
+///
+/// Built from the theme's own metrics rather than measured, so a change to the
+/// gutter moves the click with it. The notebook body draws no frame, so its
+/// text starts at the widget's own corner.
+fn first_gutter(harness: &Harness<'_, App>) -> Pos2 {
+    let rect = harness.get_by_role(Role::MultilineTextInput).rect();
+    pos2(
+        rect.left() + metric::GUTTER / 2.0,
+        rect.top() + metric::GUTTER / 2.0,
+    )
+}
+
+/// Where a needle sits on screen inside a field, by counting characters along
+/// the first line.
+fn in_first_line(harness: &Harness<'_, App>, chars_in: f32) -> Pos2 {
+    let rect = harness.get_by_role(Role::MultilineTextInput).rect();
+    pos2(
+        rect.left() + chars_in,
+        rect.top() + metric::GUTTER / 2.0,
+    )
+}
+
+#[test]
+fn clicking_a_checkbox_ticks_it() {
+    // The box is painted, not laid out, so the field knows nothing about it.
+    // This is the test that the drawn thing and the hit test agree.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- [ ] pay rent");
+    let pos = first_gutter(&harness);
+    click_at(&mut harness, pos);
+
+    assert_eq!(body_of(&harness, folder), "- [x] pay rent");
+}
+
+#[test]
+fn clicking_a_ticked_checkbox_unticks_it() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- [x] pay rent");
+    let pos = first_gutter(&harness);
+    click_at(&mut harness, pos);
+
+    assert_eq!(body_of(&harness, folder), "- [ ] pay rent");
+}
+
+#[test]
+fn clicking_the_text_beside_a_checkbox_leaves_it_alone() {
+    // Clicking into the words is how you edit them. Only the box toggles.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- [ ] pay rent");
+    let pos = in_first_line(&harness, metric::GUTTER + 40.0);
+    click_at(&mut harness, pos);
+
+    assert_eq!(body_of(&harness, folder), "- [ ] pay rent");
+}
+
+#[test]
+fn clicking_a_bullet_toggles_nothing() {
+    // The gutter holds a dot on a bulleted line, and a dot is not a control.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- pay rent");
+    let pos = first_gutter(&harness);
+    click_at(&mut harness, pos);
+
+    assert_eq!(body_of(&harness, folder), "- pay rent");
+}
+
+#[test]
+fn ctrl_enter_ticks_the_box_on_the_caret_line() {
+    // The keyboard equivalent. A box that only a mouse can tick is a box some
+    // people cannot tick at all.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- [ ] one\n- [ ] two");
+    press(&mut harness, Key::ArrowDown);
+    chord(&mut harness, Modifiers::CTRL, Key::Enter);
+
+    assert_eq!(body_of(&harness, folder), "- [ ] one\n- [x] two");
+}
+
+#[test]
+fn ctrl_clicking_a_link_opens_it_in_the_browser() {
+    let mut harness = harness();
+    notebook_body(&mut harness, "https://example.com/docs");
+    // Well inside the address, which starts at the very left of the line.
+    let pos = in_first_line(&harness, 40.0);
+
+    assert_eq!(
+        click_at_with(&mut harness, pos, Modifiers::CTRL),
+        Some("https://example.com/docs".to_owned())
+    );
+}
+
+#[test]
+fn ctrl_clicking_an_explicit_link_opens_its_target_not_its_label() {
+    let mut harness = harness();
+    notebook_body(&mut harness, "[the docs](https://example.com/x)");
+    let pos = in_first_line(&harness, 20.0);
+
+    assert_eq!(
+        click_at_with(&mut harness, pos, Modifiers::CTRL),
+        Some("https://example.com/x".to_owned())
+    );
+}
+
+#[test]
+fn a_plain_click_on_a_link_only_moves_the_caret() {
+    // The field is editable, so a bare click has to keep meaning what it means
+    // everywhere else. That is also why the hand cursor is modifier gated.
+    let mut harness = harness();
+    notebook_body(&mut harness, "https://example.com/docs");
+    let pos = in_first_line(&harness, 40.0);
+
+    assert_eq!(click_at_with(&mut harness, pos, Modifiers::NONE), None);
+}
+
+#[test]
+fn ctrl_clicking_ordinary_text_opens_nothing() {
+    let mut harness = harness();
+    notebook_body(&mut harness, "just some words with no address in them");
+    let pos = in_first_line(&harness, 40.0);
+
+    assert_eq!(click_at_with(&mut harness, pos, Modifiers::CTRL), None);
+}
+
+#[test]
+fn ctrl_clicking_past_the_end_of_a_link_opens_nothing() {
+    // The reason the hit test walks glyphs instead of asking the galley for the
+    // nearest caret: nearest would answer with the last character of the line
+    // however far into the margin the pointer was.
+    let mut harness = harness();
+    notebook_body(&mut harness, "https://example.com");
+    let rect = harness.get_by_role(Role::MultilineTextInput).rect();
+    let pos = pos2(rect.right() - 4.0, rect.top() + metric::GUTTER / 2.0);
+
+    assert_eq!(click_at_with(&mut harness, pos, Modifiers::CTRL), None);
+}
+
+/// Pastes text as the clipboard would deliver it.
+fn paste(harness: &mut Harness<'_, App>, what: &str) {
+    harness
+        .input_mut()
+        .events
+        .push(Event::Paste(what.to_owned()));
+    settle(harness);
+}
+
+#[test]
+fn pasting_a_url_over_a_selection_makes_a_link_of_it() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("the docs");
+    settle(&mut harness);
+    select_all(&mut harness);
+    paste(&mut harness, "https://example.com/d");
+
+    assert_eq!(body_of(&harness, folder), "[the docs](https://example.com/d)");
+}
+
+#[test]
+fn pasting_a_url_with_nothing_selected_pastes_it_plainly() {
+    // Nothing to hang it on, and the bare address autolinks anyway, so the
+    // ordinary paste is the right answer.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    paste(&mut harness, "https://example.com/d");
+
+    assert_eq!(body_of(&harness, folder), "https://example.com/d");
+}
+
+#[test]
+fn pasting_ordinary_text_over_a_selection_still_replaces_it() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text("the docs");
+    settle(&mut harness);
+    select_all(&mut harness);
+    paste(&mut harness, "the manual");
+
+    assert_eq!(body_of(&harness, folder), "the manual");
+}
+
+#[test]
+fn clicking_a_checkbox_does_not_move_the_caret_into_the_line() {
+    // The gutter is not text. Left alone, the caret the field places on a click
+    // would reveal the line's own source, so ticking a box would swap the box
+    // for `- [x] ` and a caret: the wrong feedback for the one action whose
+    // whole point is the tick appearing.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- [ ] one\n- [ ] two");
+    // Caret parked on the first line, by typing rather than clicking.
+    press(&mut harness, Key::Home);
+    let caret = caret_of(&harness);
+
+    // Second row: one row down from the first.
+    let rect = harness.get_by_role(Role::MultilineTextInput).rect();
+    let row = row_height(&harness);
+    click_at(
+        &mut harness,
+        pos2(
+            rect.left() + metric::GUTTER / 2.0,
+            rect.top() + row * 1.5,
+        ),
+    );
+
+    assert_eq!(body_of(&harness, folder), "- [ ] one\n- [x] two");
+    assert_eq!(caret_of(&harness), caret, "the caret followed the click");
+}
+
+/// The field's caret, in characters.
+fn caret_of(harness: &Harness<'_, App>) -> Option<(usize, usize)> {
+    let id = eframe::egui::Id::new("trackcrab_comment_body");
+    let state = eframe::egui::widgets::text_edit::TextEditState::load(&harness.ctx, id)?;
+    let range = state.cursor.char_range()?;
+    Some((range.primary.index.0, range.secondary.index.0))
+}
+
+/// One row of body text, measured off the live style rather than assumed.
+fn row_height(harness: &Harness<'_, App>) -> f32 {
+    let size = harness
+        .ctx
+        .global_style()
+        .text_styles
+        .get(&eframe::egui::TextStyle::Body)
+        .map_or(16.5, |font| font.size);
+    harness
+        .ctx
+        .fonts_mut(|fonts| fonts.row_height(&trackcrab::ui::theme::body_font(size)))
+}
+
+#[test]
+fn ticking_a_box_in_a_note_you_are_only_reading_does_not_start_editing_it() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "- [ ] pay rent");
+    // Out of the field. Escape is the way out now that Tab indents.
+    press(&mut harness, Key::Escape);
+    settle(&mut harness);
+    assert!(harness.ctx.memory(eframe::egui::Memory::focused).is_none());
+
+    let pos = first_gutter(&harness);
+    click_at(&mut harness, pos);
+
+    assert_eq!(body_of(&harness, folder), "- [x] pay rent");
+    assert!(
+        harness.ctx.memory(eframe::egui::Memory::focused).is_none(),
+        "clicking a box put the field into editing"
+    );
+}
+
+// ------------------------------------------------- searching markdown (D8)
+
+/// Puts a note on "Land the VPC design" and searches for `needle` through the
+/// real search box, returning whether the task's row survived the filter.
+fn search_finds_the_note(note: &str, needle: &str) -> bool {
+    let mut harness = harness();
+    open_task(&mut harness, "Land the VPC design");
+    let id = open_task_id(&harness);
+    harness
+        .state_mut()
+        .tree_mut()
+        .edit_task(id, |task| note.clone_into(&mut task.notes))
+        .unwrap();
+
+    toggle_sidebar(&mut harness);
+    search_box(&harness).focus();
+    harness.run();
+    search_box(&harness).type_text(needle);
+    settle(&mut harness);
+
+    harness
+        .query_all_by_label_contains("Land the VPC design")
+        .next()
+        .is_some()
+}
+
+#[test]
+fn the_search_box_finds_a_phrase_split_by_markup() {
+    // Through the real box, because the sidebar is what calls the filter and
+    // this is the behaviour the whole of D8 is for: the note reads "the strong
+    // white flour" and the stored bytes have asterisks in the middle of it.
+    assert!(search_finds_the_note(
+        "Use the **strong white** flour",
+        "strong white flour"
+    ));
+}
+
+#[test]
+fn the_search_box_does_not_match_markup_you_cannot_see() {
+    assert!(!search_finds_the_note("Use the **strong white** flour", "**"));
+}
+
+#[test]
+fn the_search_box_still_finds_ordinary_words() {
+    // The regression that would matter most: stripping must not break the
+    // search that already worked.
+    assert!(search_finds_the_note(
+        "quota increase raised with support",
+        "quota increase"
+    ));
+}
+
+// ------------------------------------------------- the notebook scrolls
+
+/// A note taller than any panel, as plain lines.
+fn long_note() -> String {
+    use std::fmt::Write as _;
+    (1..=120).fold(String::new(), |mut out, i| {
+        let _ = writeln!(out, "line {i}");
+        out
+    })
+}
+
+/// Scrolls the wheel over a point, as a hand would.
+fn wheel_at(harness: &mut Harness<'_, App>, pos: Pos2, by: f32) {
+    harness.input_mut().events.push(Event::PointerMoved(pos));
+    harness.input_mut().events.push(Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, by),
+        modifiers: Modifiers::NONE,
+        phase: eframe::egui::TouchPhase::Move,
+    });
+    settle(harness);
+}
+
+/// The notebook body's rect. Its top is the observable: scrolling moves the
+/// whole laid-out field up, so a top that has gone negative is content that has
+/// been scrolled past.
+fn body_rect(harness: &Harness<'_, App>) -> eframe::egui::Rect {
+    harness.get_by_role(Role::MultilineTextInput).rect()
+}
+
+#[test]
+fn a_note_longer_than_the_panel_scrolls() {
+    let mut harness = harness();
+    notebook_body(&mut harness, &long_note());
+    let before = body_rect(&harness);
+
+    wheel_at(&mut harness, pos2(before.center().x, before.top() + 60.0), -400.0);
+
+    let after = body_rect(&harness);
+    assert!(
+        after.top() < before.top() - 300.0,
+        "the body did not scroll: {} then {}",
+        before.top(),
+        after.top()
+    );
+}
+
+#[test]
+fn a_note_that_fits_does_not_scroll() {
+    let mut harness = harness();
+    notebook_body(&mut harness, "one line");
+    let before = body_rect(&harness);
+
+    wheel_at(&mut harness, pos2(before.center().x, before.top() + 60.0), -400.0);
+
+    let after = body_rect(&harness).top();
+    assert!(
+        (after - before.top()).abs() < 0.5,
+        "a note that fits should stay put, moved from {} to {after}",
+        before.top()
+    );
+}
+
+#[test]
+fn a_short_note_still_fills_the_whole_panel() {
+    // The field is the click target: a note of one line has to stay clickable
+    // across the whole panel rather than shrinking to one row with dead space
+    // under it. That is what the row count computed from the box is for, and it
+    // is the thing a naive scroll area would have taken away.
+    let mut harness = harness();
+    notebook_body(&mut harness, "one line");
+    let one_line = body_rect(&harness).height();
+
+    assert!(
+        one_line > 400.0,
+        "a one line note only filled {one_line}px of the panel"
+    );
+}
+
+#[test]
+fn the_toolbar_stays_put_while_the_body_scrolls() {
+    // The reason the field is laid out and painted inside the scroll area while
+    // the bar is left outside it. Scrolling the text must not scroll the
+    // formatting bar off the top of the panel.
+    let mut harness = harness();
+    notebook_body(&mut harness, &long_note());
+    let bar = toolbar_button(&harness, "Bold").rect();
+    let before = body_rect(&harness);
+
+    wheel_at(&mut harness, pos2(before.center().x, before.top() + 60.0), -400.0);
+
+    assert_eq!(toolbar_button(&harness, "Bold").rect(), bar);
+    assert!(body_rect(&harness).top() < before.top());
+}
+
+// ------------------------------------------- the highlight menu and refocus
+
+/// Opens the highlight menu.
+fn open_highlights(harness: &mut Harness<'_, App>) {
+    notebook(harness, "\u{2022}")
+        .get_by_label("\u{2022}")
+        .click();
+    settle(harness);
+}
+
+/// The hex entry box inside the highlight menu.
+///
+/// Two single line inputs are on screen with the notebook open: its title, and
+/// this one. Told apart by sitting beside Apply rather than by role alone,
+/// since a hint is not a name.
+fn hex_field<'t>(harness: &'t Harness<'_, App>) -> Node<'t> {
+    let apply = harness.get_by_label("Apply").rect().center();
+    let mut inputs: Vec<Node<'t>> = harness.query_all_by_role(Role::TextInput).collect();
+    inputs.sort_by(|a, b| {
+        (a.rect().center() - apply)
+            .length()
+            .total_cmp(&(b.rect().center() - apply).length())
+    });
+    inputs.into_iter().next().expect("a hex field on screen")
+}
+
+#[test]
+fn the_highlight_menu_stays_open_while_the_hex_field_is_used() {
+    // egui closes a menu on *any* click by default, inside or out, which shut
+    // this one the moment the hex box was clicked: the field could never be
+    // typed into and Apply could never be reached.
+    let mut harness = harness();
+    notebook_body(&mut harness, "");
+    open_highlights(&mut harness);
+    assert_eq!(harness.query_all_by_label("Apply").count(), 1);
+
+    hex_field(&harness).click();
+    settle(&mut harness);
+
+    assert_eq!(
+        harness.query_all_by_label("Apply").count(),
+        1,
+        "clicking the hex field closed the menu"
+    );
+}
+
+/// Types into the hex box, focusing it first.
+///
+/// `type_text` only pushes text at whatever already has focus, and clicking the
+/// menu open left that on the button. A hand clicks the box, which focuses it;
+/// this is that click.
+fn type_hex(harness: &mut Harness<'_, App>, hex: &str) {
+    hex_field(harness).focus();
+    harness.run();
+    hex_field(harness).type_text(hex);
+    settle(harness);
+}
+
+#[test]
+fn a_hex_colour_can_be_typed_and_applied() {
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    open_highlights(&mut harness);
+    type_hex(&mut harness, "ff8800");
+    harness.get_by_label("Apply").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "==#ff8800|==");
+}
+
+#[test]
+fn nonsense_in_the_hex_field_applies_nothing() {
+    // Apply is disabled until the value parses, so clicking it does nothing.
+    // Asserted through the buffer rather than the button's state, which the
+    // accessibility tree does not expose.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    open_highlights(&mut harness);
+    type_hex(&mut harness, "nonsense");
+    harness.get_by_label("Apply").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "");
+}
+
+#[test]
+fn picking_a_colour_leaves_the_caret_between_the_delimiters() {
+    // The bug this pins is what the whole refocus dance is for. Picking a
+    // colour puts an empty highlight in and the caret inside it; if focus does
+    // not come back, the next thing typed goes in wherever the click left the
+    // caret and the markup comes out as `==yellow|==some` rather than
+    // `==yellow|some==`, which is not a highlight at all.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    open_highlights(&mut harness);
+    harness.get_by_label("yellow").click();
+    settle(&mut harness);
+    assert_eq!(body_of(&harness, folder), "==yellow|==");
+
+    // Typed straight in, focusing nothing: exactly what a hand does next.
+    harness
+        .input_mut()
+        .events
+        .push(Event::Text("some".to_owned()));
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "==yellow|some==");
+}
+
+#[test]
+fn a_toolbar_action_asks_for_the_frames_its_refocus_needs() {
+    // The half of the refocus that a settled test cannot see. egui only draws
+    // when something asks it to, so a retry that does not request a repaint
+    // never runs at all: in the harness thirty settling frames hide that, and
+    // in the app the field simply never gets focus back.
+    let mut harness = harness();
+    notebook_body(&mut harness, "");
+    let budget = eframe::egui::Id::new("trackcrab_comment_body").with("refocus");
+
+    toolbar_button(&harness, "Bold").click();
+    harness.step();
+
+    assert!(
+        harness.ctx.has_requested_repaint(),
+        "the action did not ask for another frame"
+    );
+    assert!(
+        harness.ctx.data(|data| data.get_temp::<u8>(budget)).is_some(),
+        "no refocus was scheduled"
+    );
+
+    settle(&mut harness);
+    assert_eq!(
+        harness.ctx.memory(eframe::egui::Memory::focused),
+        Some(eframe::egui::Id::new("trackcrab_comment_body")),
+        "focus never came back to the field"
+    );
+    assert!(
+        harness.ctx.data(|data| data.get_temp::<u8>(budget)).is_none(),
+        "the retry kept going after focus was held"
+    );
+}
+
+
+#[test]
+fn enter_in_the_hex_field_applies_it() {
+    // A value you have typed and then have to go and click a button beside is a
+    // field that feels broken.
+    let mut harness = harness();
+    let folder = notebook_body(&mut harness, "");
+    open_highlights(&mut harness);
+    type_hex(&mut harness, "3355ff");
+    press(&mut harness, Key::Enter);
+
+    assert_eq!(body_of(&harness, folder), "==#3355ff|==");
+}
+
+#[test]
+fn a_named_colour_still_closes_the_menu() {
+    // The menu no longer closes on any click, so the swatches have to close it
+    // themselves. If they stopped, it would sit open over the text.
+    let mut harness = harness();
+    notebook_body(&mut harness, "");
+    open_highlights(&mut harness);
+    harness.get_by_label("blue").click();
+    settle(&mut harness);
+
+    assert_eq!(
+        harness.query_all_by_label("Apply").count(),
+        0,
+        "the menu stayed open after a colour was picked"
+    );
+}
+
+// ----------------------------------- toolbar actions and the selection
+
+/// Types a phrase into the notebook and selects all of it.
+fn selected(harness: &mut Harness<'_, App>, what: &str) -> trackcrab::model::NodeId {
+    let folder = notebook_body(harness, "");
+    harness
+        .get_by_role(Role::MultilineTextInput)
+        .type_text(what);
+    settle(harness);
+    select_all(harness);
+    folder
+}
+
+#[test]
+fn the_highlight_menu_wraps_the_selection() {
+    // A toolbar action cannot read the widget's own cursor. Opening a *menu*
+    // takes focus off the field and keeps it off, and egui collapses the stored
+    // selection to a bare caret while it is away: the range went from (9, 0) to
+    // (9, 9) before the colour was even picked, so the empty markup landed
+    // beside the words instead of around them.
+    let mut harness = harness();
+    let folder = selected(&mut harness, "some text");
+    open_highlights(&mut harness);
+    harness.get_by_label("yellow").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "==yellow|some text==");
+}
+
+#[test]
+fn a_hex_colour_wraps_the_selection() {
+    let mut harness = harness();
+    let folder = selected(&mut harness, "some text");
+    open_highlights(&mut harness);
+    type_hex(&mut harness, "ff8800");
+    harness.get_by_label("Apply").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "==#ff8800|some text==");
+}
+
+#[test]
+fn the_bold_button_wraps_the_selection() {
+    // This one always worked, because a plain button hands the action back on
+    // the same frame it was clicked. Pinned anyway: it is the same code path,
+    // and it is the one that would silently break if the remembered caret ever
+    // stopped keeping up.
+    let mut harness = harness();
+    let folder = selected(&mut harness, "some text");
+    toolbar_button(&harness, "Bold").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "**some text**");
+}
+
+#[test]
+fn a_button_pressed_twice_takes_its_own_formatting_off() {
+    // Only possible if the caret remembered after the first press is the
+    // wrapped selection, not where things were before it.
+    let mut harness = harness();
+    let folder = selected(&mut harness, "some text");
+    toolbar_button(&harness, "Bold").click();
+    settle(&mut harness);
+    toolbar_button(&harness, "Bold").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "some text");
+}
+
+#[test]
+fn two_different_buttons_compose_on_one_selection() {
+    let mut harness = harness();
+    let folder = selected(&mut harness, "some text");
+    toolbar_button(&harness, "Bold").click();
+    settle(&mut harness);
+    toolbar_button(&harness, "Italic").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "***some text***");
+}
+
+#[test]
+fn a_bare_caret_is_not_treated_as_an_old_selection() {
+    // The guard against the fix over-reaching. Remembering the last selection
+    // must not mean resurrecting it: after the caret has been moved to a bare
+    // position, a toolbar action belongs there and nowhere else.
+    let mut harness = harness();
+    let folder = selected(&mut harness, "some text");
+    // Collapse the selection to the end, still inside the field.
+    press(&mut harness, Key::End);
+    open_highlights(&mut harness);
+    harness.get_by_label("yellow").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "some text==yellow|==");
+}
+
+#[test]
+fn a_selection_survives_a_menu_being_opened_and_dismissed() {
+    // Opened, then closed with Escape rather than by picking anything. The
+    // selection has to still be there afterwards, or the next chord acts on the
+    // wrong text.
+    let mut harness = harness();
+    let folder = selected(&mut harness, "some text");
+    open_highlights(&mut harness);
+    press(&mut harness, Key::Escape);
+    settle(&mut harness);
+    toolbar_button(&harness, "Bold").click();
+    settle(&mut harness);
+
+    assert_eq!(body_of(&harness, folder), "**some text**");
 }

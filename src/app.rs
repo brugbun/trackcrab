@@ -20,7 +20,6 @@ const COMMENTS_ANIM: &str = "trackcrab_comments_anim";
 mod keys {
     use eframe::egui::{Key, KeyboardShortcut as Kb, Modifiers};
 
-    pub const TOGGLE_SIDEBAR: Kb = Kb::new(Modifiers::CTRL, Key::B);
     pub const NEW_TASK: Kb = Kb::new(Modifiers::CTRL, Key::N);
     /// Checked before [`NEW_TASK`], which would otherwise swallow it.
     pub const NEW_FOLDER: Kb = Kb::new(Modifiers::CTRL.plus(Modifiers::SHIFT), Key::N);
@@ -530,22 +529,32 @@ impl App {
             return;
         }
 
+        // Worked out up front, because several of the shortcuts below need it.
+        //
+        // The search box is the one field that keeps the *vertical* arrows for
+        // the tree: a single line field has nothing to do with up and down, so
+        // leaving them makes type, arrow, Enter one flow. Escape is left alone
+        // too, further down.
+        let focused = ctx.memory(egui::Memory::focused);
+        let typing = focused.is_some();
+        let writing = focused.is_some_and(|id| id != ui::search_box_id());
+
         // Shift+Ctrl+N is checked before Ctrl+N, otherwise the plainer shortcut
-        // would swallow it.
-        if ctx.input_mut(|i| i.consume_shortcut(&keys::NEW_FOLDER)) {
-            self.dialog = Some(Dialog::NewFolder {
-                parent: self.current_folder(),
-                name: String::new(),
-            });
-        } else if ctx.input_mut(|i| i.consume_shortcut(&keys::NEW_TASK))
-            && let Some(folder) = self.current_folder()
-        {
-            self.start_new_task(ctx, folder);
+        // would swallow it. Both stand down while a field has the caret: a
+        // Ctrl+N halfway through writing a note used to create a task.
+        if !typing {
+            if ctx.input_mut(|i| i.consume_shortcut(&keys::NEW_FOLDER)) {
+                self.dialog = Some(Dialog::NewFolder {
+                    parent: self.current_folder(),
+                    name: String::new(),
+                });
+            } else if ctx.input_mut(|i| i.consume_shortcut(&keys::NEW_TASK))
+                && let Some(folder) = self.current_folder()
+            {
+                self.start_new_task(ctx, folder);
+            }
         }
 
-        if ctx.input_mut(|i| i.consume_shortcut(&keys::TOGGLE_SIDEBAR)) {
-            self.set_panel(self.panel.toggled_to(Panel::Folders));
-        }
         // The directional pair: think of it as pushing the content right (the
         // folder tree takes the left) or left (the notebook takes the right).
         // Pressing the same one again brings the content back to the middle.
@@ -568,15 +577,6 @@ impl App {
         // consumed here never reaches the widget, so the plain keys below stand
         // down while a field is focused.
         //
-        // The search box is the one exception, and only for the vertical keys: a
-        // single line field has nothing to do with up and down, so leaving them
-        // to the tree turns type, arrow, Enter into one flow. Escape is left
-        // alone too, further down: with the caret in the search box, clearing
-        // the filter is exactly what it should mean.
-        let focused = ctx.memory(egui::Memory::focused);
-        let typing = focused.is_some();
-        let writing = focused.is_some_and(|id| id != ui::search_box_id());
-
         // The folder tree, walked as a flat list. Only while it has the screen,
         // so the arrows stay free for the notebook when that is what is open.
         if !writing && self.panel == Panel::Folders {

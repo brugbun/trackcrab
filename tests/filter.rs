@@ -422,3 +422,184 @@ fn the_arrow_requests_wrap_in_both_directions() {
     assert_eq!(Request::Add.resolve(0, 3), None);
     assert_eq!(Request::Delete.resolve(0, 3), None);
 }
+
+// ------------------------------------------------- markdown search (D8)
+
+/// A tree with one task and one folder note, both written in markdown.
+fn markdown_fixture() -> (Tree, NodeId, NodeId) {
+    let mut tree = Tree::new();
+    let folder = tree.create_folder(None, "Baking").unwrap();
+    let task = tree
+        .create_task(
+            folder,
+            "Sourdough",
+            Some("Use the **strong white** flour, not the *plain*.".into()),
+            Status::Open,
+        )
+        .unwrap();
+    tree.edit_task(task, |t| {
+        "See [the method](https://example.com/m) and the ==green|starter== notes.\n\
+         - [ ] feed the starter\n\
+         1. autolyse\n"
+            .clone_into(&mut t.notes);
+    })
+    .unwrap();
+    let first = tree.add_comment_space(folder).unwrap();
+    tree.edit_comment_space(folder, first, |space| {
+        "# Kickoff\nSpoke to __Anya__ about the `banneton`.".clone_into(&mut space.body);
+    })
+    .unwrap();
+    (tree, folder, task)
+}
+
+/// Does the filter keep this node?
+fn keeps(tree: &Tree, needle: &str, id: NodeId) -> bool {
+    visible(tree, &text(needle)).is_some_and(|set| set.contains(&id))
+}
+
+#[test]
+fn a_phrase_split_by_markup_is_still_found() {
+    // The point of stripping. The description reads "the strong white flour",
+    // and that is what someone searching will type; the stored bytes have two
+    // pairs of asterisks in the middle of it.
+    let (tree, _, task) = markdown_fixture();
+    assert!(keeps(&tree, "strong white flour", task));
+}
+
+#[test]
+fn searching_for_a_delimiter_finds_nothing() {
+    // Kyle's actual complaint: an asterisk you cannot see should not match
+    // every emphasised word in the vault.
+    let (tree, folder, task) = markdown_fixture();
+    for needle in ["*", "**", "__", "==", "`", "[", "](", "https://"] {
+        assert!(
+            visible(&tree, &text(needle)).is_some_and(|set| set.is_empty()),
+            "{needle:?} matched something"
+        );
+        assert!(!keeps(&tree, needle, task));
+        assert!(!keeps(&tree, needle, folder));
+    }
+}
+
+#[test]
+fn a_list_marker_is_not_searchable_text() {
+    // The markers are drawn, not written, so they are not words on the page.
+    let (tree, _, task) = markdown_fixture();
+    assert!(!keeps(&tree, "- [ ]", task));
+    assert!(!keeps(&tree, "1.", task));
+    // The words beside them still are.
+    assert!(keeps(&tree, "feed the starter", task));
+    assert!(keeps(&tree, "autolyse", task));
+}
+
+#[test]
+fn a_link_label_is_searchable_and_its_address_is_not() {
+    // The label is on the page and the address is not, which is exactly what
+    // the reader sees.
+    let (tree, _, task) = markdown_fixture();
+    assert!(keeps(&tree, "the method", task));
+    assert!(!keeps(&tree, "example.com/m", task));
+}
+
+#[test]
+fn a_highlight_colour_is_not_searchable_text() {
+    // `==green|starter==` reads as "starter". The colour is a instruction, not
+    // a word.
+    let (tree, _, task) = markdown_fixture();
+    assert!(keeps(&tree, "starter", task));
+    assert!(!keeps(&tree, "green|", task));
+}
+
+#[test]
+fn a_folder_note_is_searched_as_it_reads() {
+    let (tree, folder, _) = markdown_fixture();
+    assert!(keeps(&tree, "Anya", folder));
+    assert!(keeps(&tree, "banneton", folder));
+    assert!(!keeps(&tree, "__Anya__", folder));
+}
+
+#[test]
+fn a_heading_is_still_searchable_without_its_hashes() {
+    let (tree, folder, _) = markdown_fixture();
+    assert!(keeps(&tree, "kickoff", folder));
+    assert!(!keeps(&tree, "# kickoff", folder));
+}
+
+#[test]
+fn code_is_searched_exactly_as_written() {
+    // Nothing formats inside code, so nothing is stripped from it either: a
+    // snippet has to be findable by the characters it actually contains.
+    let mut tree = Tree::new();
+    let folder = tree.create_folder(None, "Snippets").unwrap();
+    let first = tree.add_comment_space(folder).unwrap();
+    tree.edit_comment_space(folder, first, |space| {
+        "```rust\nlet x = *ptr;\n```".clone_into(&mut space.body);
+    })
+    .unwrap();
+    assert!(keeps(&tree, "let x = *ptr;", folder));
+}
+
+#[test]
+fn a_title_is_matched_as_typed() {
+    // Titles are one line fields and carry no markdown, so an asterisk in a
+    // title is an asterisk.
+    let mut tree = Tree::new();
+    let folder = tree.create_folder(None, "Odd *names*").unwrap();
+    assert!(keeps(&tree, "*names*", folder));
+}
+
+#[test]
+fn the_memo_does_not_answer_from_a_stale_entry() {
+    // The cache is keyed on the text itself, so an edit is a different key and
+    // there is nothing to invalidate. Worth pinning: the alternative keying,
+    // on a node and a timestamp, is exactly where this would go wrong.
+    let (mut tree, _, task) = markdown_fixture();
+    assert!(keeps(&tree, "autolyse", task));
+
+    tree.edit_task(task, |t| "**retard** overnight".clone_into(&mut t.notes))
+        .unwrap();
+    assert!(!keeps(&tree, "autolyse", task));
+    assert!(keeps(&tree, "retard", task));
+}
+
+#[test]
+fn clearing_the_memo_changes_nothing_but_speed() {
+    let (tree, folder, task) = markdown_fixture();
+    let asked = |needle: &str| {
+        (
+            keeps(&tree, needle, task),
+            keeps(&tree, needle, folder),
+        )
+    };
+    let warm: Vec<_> = ["starter", "*", "the method", "banneton"]
+        .into_iter()
+        .map(asked)
+        .collect();
+    trackcrab::ui::search::forget();
+    let cold: Vec<_> = ["starter", "*", "the method", "banneton"]
+        .into_iter()
+        .map(asked)
+        .collect();
+    assert_eq!(warm, cold);
+}
+
+#[test]
+fn the_matching_space_is_found_through_markup() {
+    // Opening a search hit lands on the page that holds it, and that lookup has
+    // to strip markup for the same reason the search itself does.
+    let mut tree = Tree::new();
+    let folder = tree.create_folder(None, "Project").unwrap();
+    let first = tree.add_comment_space(folder).unwrap();
+    tree.edit_comment_space(folder, first, |space| {
+        "nothing here".clone_into(&mut space.body);
+    })
+    .unwrap();
+    let second = tree.add_comment_space(folder).unwrap();
+    tree.edit_comment_space(folder, second, |space| {
+        "the **transit** gateway".clone_into(&mut space.body);
+    })
+    .unwrap();
+    let node = tree.get(folder).unwrap();
+    let space = node.as_folder().unwrap();
+    assert_eq!(text("transit gateway").matching_space(space), Some(second));
+}

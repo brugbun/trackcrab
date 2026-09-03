@@ -45,69 +45,121 @@ Items can be dragged between folders in either panel. Targets go green or red
 before you release, so a refused drop is never a surprise. A folder cannot be
 dropped inside itself.
 
-## Notes and comments
-
-Two places to write things down, at two different scopes.
-
-**Notes** are an addendum to a single task, under `STATUS` in its detail view
-and separate from the description. What is going on with this one thing.
-
-**Comments** are an addendum to a whole folder: what shapes the entire project.
-They live in a notebook that slides in over the right of a folder listing, with
-several titled spaces you cycle through like desktop workspaces. New spaces are
-auto-numbered and the title is editable in place. `+` adds a space and takes you
-straight to it, the chevrons either side of the title cycle with wraparound, and
-a quiet `2 / 4` says where you are.
-
-The notebook is deliberate: hidden by default, remembered between runs, and it
-*overlaps* the listing rather than squeezing it, so it is allowed to cover the
-timestamp and time columns while you are reading. Deleting a space always asks
-first.
-
-Both join the sidebar search. A folder is kept when any of its comment spaces
-matches, and opening it lands on the space the text is actually in.
-
 ### Keyboard
 
 | Keys | Does |
 |---|---|
-| `Ctrl+B` | Show or hide the sidebar |
-| `Ctrl+Right` | Push the content right: folder tree on, notebook off |
-| `Ctrl+Left` | Push the content left: notebook on, folder tree off |
-| `Up` / `Down` | Move through the folder tree, one visible row at a time |
-| `Enter` | Open whatever the tree cursor is on, folder or task |
-| `Left` / `Right` | Cycle comment spaces, when the notebook is open |
+| `Ctrl+Left` / `Ctrl+Right` | Show or hide the sidebar |
 | `Ctrl+F` | Open the sidebar and jump to search |
 | `Ctrl+N` | New task in the folder you are in |
 | `Ctrl+Shift+N` | New folder |
 | `Ctrl+S` | Save now |
-| `Enter` | Confirm the open dialog, when it has what it needs |
+| `Up` / `Down` | Move through the tree as if it were flat, ignoring depth |
+| `Enter` | Open the highlighted folder or task |
+| `Left` / `Right` | Step through comments |
 | `Delete` | Delete what is open, after confirming |
 | `Escape` | Close a dialog, or clear the filter |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | Zoom the interface |
 
-The two directional keys are a pair: think of them as pushing the content right
-or left. Pressing the same one twice returns it to the middle. The two panels can
-never both be open, which is modelled as one value rather than two flags.
+`Ctrl+B` used to toggle the sidebar. It is now **Bold**, because `Ctrl+Left` and
+`Ctrl+Right` already do that job and the ambiguity was not worth keeping.
 
-The plain arrows follow whichever panel has the screen. With the folder tree
-open, up and down walk it as a **flat** list, ignoring depth: down from a
-folder's last task steps to the next top-level folder, exactly as the eye reads
-it. Collapsed subtrees and rows a filter has hidden are skipped, so the cursor
-can never land on something invisible, and the ends clamp rather than wrap. The
-cursor is drawn as an outline, distinct from the fill that marks what is
-actually open, and `Enter` opens it.
+Enter never submits while the caret is in a description, where it means a new
+line, and no shortcut that would type into your text fires while you are typing.
+No shortcut fires at all while a dialog is open.
 
-With the notebook open, left and right cycle its spaces, wrapping the way the
-on-screen chevrons do.
+## Writing
 
-Typing wins over navigation: a plain key belongs to whatever has the caret. The
-one exception is the search box, and only for up and down, since a single-line
-field has no use for them. That makes type, arrow, `Enter` one continuous
-flow.
+Descriptions, notes and comments take markdown, and they take it **live**. There
+is no edit mode and no preview pane: type `# ` and the line is already a heading,
+type `**bold**` and it is already bold. The markup does not disappear, it gets
+out of the way, dimmed and squeezed to almost nothing. Put the caret on a line
+and its own markup comes back, full size, so you can see and fix exactly what you
+wrote.
 
-Enter never submits while the caret is in a description, a note or a comment,
-where it means a new line. No shortcut fires while a dialog is open.
+The dialect is Discord's, so it should already be in your fingers:
+
+| Type | Get |
+|---|---|
+| `# ` .. `#### ` | Headings, four levels |
+| `**bold**` | **bold** |
+| `*italic*` or `_italic_` | *italic* |
+| `__underline__` | underlined |
+| `~~strike~~` | struck through |
+| `` `code` `` | inline code |
+| ```` ```py ```` .. ```` ``` ```` | a code block, language tagged |
+| `- item` | a bullet |
+| `1. item` | a numbered item |
+| `- [ ] item` / `- [x] item` | a checkbox |
+| `---` | a divider |
+| `[label](url)` | a link |
+| `https://...` | also a link, no markup needed |
+| `==text==` | highlighted |
+| `==green\|text==` | highlighted in a named colour |
+| `==#f2c14e\|text==` | highlighted in any colour you like |
+
+Highlighting is not standard markdown. The eight named colours are yellow, green,
+blue, pink, purple, orange, red and grey; the hex form is there for when none of
+them is the one you wanted. Either way the text colour is chosen for you, by
+measured contrast against whatever background you asked for, so a highlight is
+never unreadable.
+
+Lists nest. Tab indents an item, `Shift+Tab` outdents it, and Enter carries the
+marker to the next line, renumbering as it goes. Enter on an empty item ends the
+list instead of adding another blank one, and Backspace at the start of an item
+takes the marker off rather than eating the line above.
+
+Checkboxes are clickable. Click the box and it ticks, and because the gutter is
+not text the caret stays exactly where it was, so ticking something off a list
+you were only reading does not drop you into editing it. `Ctrl+Enter` does the
+same from the keyboard, on whichever line the caret is on.
+
+Links are clickable too, with `Ctrl` held, which opens them in whatever you have
+set as your browser. `Ctrl` rather than a bare click because these fields are
+always editable and a plain click has to keep meaning "put the caret here".
+Hovering a link shows you where it goes, which for a `[label](url)` is the only
+way to see the address without putting the caret on it.
+
+Paste an address over some selected text and it becomes a link to it. Paste
+anything else, or paste with nothing selected, and it pastes exactly as you would
+expect.
+
+### Searching it
+
+The sidebar search matches **what you can see**, not what is stored. A note
+reading `the **strong white** flour` is found by searching "strong white flour",
+which the raw text would miss because of the asterisks in the middle of it, and
+searching for `**` finds nothing at all, because there are no asterisks on the
+page. Markers, link addresses and highlight colours are all off the page and so
+out of the search; a link's label is on it and stays searchable. Code is the one
+exception, and matched exactly as written, since nothing formats inside it and a
+snippet has to be findable by the characters it contains.
+
+Titles are one-line fields with no markdown in them, so a title is matched
+exactly as typed.
+
+### The toolbar
+
+Every notes and comments field has a button bar above it, for the days you cannot
+remember which asterisk does what:
+
+```
+H | B I U S <> | list number check | rule code link highlight
+```
+
+`H` and the highlight dot open menus, the rest apply immediately. They work on a
+selection or at the caret, and they put the caret back somewhere sensible either
+way. Everything on the bar has a keyboard equivalent, and the three you will
+actually use are the three you would guess:
+
+| Keys | Does |
+|---|---|
+| `Ctrl+B` | Bold |
+| `Ctrl+I` | Italic |
+| `Ctrl+U` | Underline |
+| `Ctrl+Enter` | Tick or untick the checkbox on this line |
+| `Ctrl`+click | Open a link in your browser |
+| `Escape` | Leave the field, now that Tab indents |
 
 ## Your data
 
@@ -150,7 +202,7 @@ make lint   # clippy, pedantic, warnings as errors
 make fmt
 ```
 
-The suite is in seven files, and the split is deliberate:
+The suite splits by layer, deliberately:
 
 | File | Covers |
 |---|---|
@@ -158,15 +210,34 @@ The suite is in seven files, and the split is deliberate:
 | `tests/persistence.rs` | Round trips, atomic writes, and all four corruption paths |
 | `tests/ui.rs` | The real interface, clicked through egui's accessibility tree |
 | `tests/dnd.rs` | Drag and drop legality, checked against what the tree actually permits |
-| `tests/filter.rs` | The sidebar search, the status filter, and comment matching |
+| `tests/filter.rs` | The sidebar search and status filter |
 | `tests/theme.rs` | Design invariants, as computed WCAG contrast ratios |
 | `tests/icon.rs` | The generated window icon |
+| `tests/markdown.rs` | The parser: lines, inline spans, delimiter edge cases, fuzzed |
+| `tests/layout.rs` | What the parser turns into, span by span and format by format |
+| `tests/edits.rs` | Tab, Enter, Backspace and every toolbar action, at every caret position |
+| `tests/blocks.rs` | Bullets, numbers, checkboxes, rules and code backgrounds |
+
+`cargo run --release --example bench_search` prints what a search costs, which
+is what justifies the memo in `ui::search`, so a change to the parser can be
+checked against the claim rather than trusted.
+
+The markdown core is pure functions over `&str`, which is why it can be tested
+this hard: `markdown::parse` and `ui::text::layout` take text and return
+structure, and the egui wrappers over them are kept deliberately thin. Two of
+those files are property tests, and they earned it, finding a delimiter escape
+that stepped over the character after it and two editing operations that
+corrupted a line from the right caret position.
+
+The invariant the whole feature rests on is that the laid-out text must equal the
+source byte for byte, because a text field maps the caret through it. Markup is
+therefore styled down to nothing, never removed. A `debug_assert`, a corpus test
+and a UI test through the real widget all hold that line.
 
 The UI tests use [`egui_kittest`](https://crates.io/crates/egui_kittest) to click
 the actual widgets rather than calling helpers underneath them. That is what
-caught a collapse arrow rendered permanently unclickable, a row highlight
-swallowing the widget beneath it, and the comments notebook overflowing its own
-panel by exactly its margins.
+caught a collapse arrow rendered permanently unclickable, and a row highlight
+swallowing the widget beneath it.
 
 `cargo run --example render_icon > icon.ppm` dumps the generated icon if you want
 to look at it.

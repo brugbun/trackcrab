@@ -60,12 +60,6 @@ impl CommentSpace {
         self.body.trim().is_empty()
             && (self.title.trim().is_empty() || Self::auto_number(&self.title).is_some())
     }
-
-    /// Does this space mention `needle`? Expects `needle` already lowercased.
-    #[must_use]
-    pub fn matches(&self, needle: &str) -> bool {
-        self.title.to_lowercase().contains(needle) || self.body.to_lowercase().contains(needle)
-    }
 }
 
 /// A folder. Holds an ordered list of children, which may be folders or tasks,

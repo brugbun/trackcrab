@@ -42,6 +42,37 @@ pub mod color {
     pub const SELECTED: Color32 = Color32::from_rgb(0x2d, 0x35, 0x3f);
 
     pub const ACCENT: Color32 = Color32::from_rgb(0x6d, 0xbe, 0xff);
+
+    /// Markdown delimiters, while they are showing. Quiet enough to read past,
+    /// visible enough to edit.
+    pub const MARKUP: Color32 = Color32::from_rgb(0x5a, 0x62, 0x6e);
+    /// Behind inline code and code blocks.
+    pub const CODE_BG: Color32 = Color32::from_rgb(0x11, 0x13, 0x17);
+    /// Inline code and code block text, a shade off body text so a code run is
+    /// identifiable even where the background is subtle.
+    pub const CODE_TEXT: Color32 = Color32::from_rgb(0xc8, 0xd8, 0xc0);
+    /// Links.
+    pub const LINK: Color32 = Color32::from_rgb(0x7c, 0xc7, 0xff);
+
+    /// Highlight backgrounds.
+    ///
+    /// Muted rather than the vivid marker-pen colours the names suggest: this
+    /// is a dark interface, and a saturated yellow behind light text is
+    /// unreadable. Each is dark enough to keep body text legible on top, which
+    /// `tests/theme.rs` asserts as a contrast ratio rather than by eye.
+    pub mod mark {
+        use eframe::egui::Color32;
+
+        pub const DEFAULT: Color32 = Color32::from_rgb(0x4a, 0x42, 0x1c);
+        pub const YELLOW: Color32 = Color32::from_rgb(0x4a, 0x42, 0x1c);
+        pub const GREEN: Color32 = Color32::from_rgb(0x1e, 0x42, 0x2c);
+        pub const BLUE: Color32 = Color32::from_rgb(0x1c, 0x36, 0x52);
+        pub const PINK: Color32 = Color32::from_rgb(0x4c, 0x24, 0x3c);
+        pub const PURPLE: Color32 = Color32::from_rgb(0x35, 0x28, 0x52);
+        pub const ORANGE: Color32 = Color32::from_rgb(0x50, 0x33, 0x18);
+        pub const RED: Color32 = Color32::from_rgb(0x4e, 0x22, 0x22);
+        pub const GREY: Color32 = Color32::from_rgb(0x35, 0x3b, 0x44);
+    }
     /// Ring drawn around every status dot. On the bright statuses it disappears
     /// into the fill; on the near black Blocked dot it is the only thing that
     /// makes the shape locatable against a dark panel.
@@ -51,6 +82,46 @@ pub mod color {
 
 /// Sizes that several views need to agree on.
 pub mod metric {
+    /// Heading sizes, as a multiple of body text, for levels 1 to 4.
+    ///
+    /// Tightly spaced on purpose. The notes panel is narrow, so an H1 at twice
+    /// body size wraps after three words; these stay distinguishable without
+    /// taking the whole width.
+    pub const HEADING_SCALE: [f32; 4] = [1.60, 1.38, 1.20, 1.08];
+    /// Padding added around a highlight's background fill.
+    pub const MARK_EXPAND: f32 = 1.5;
+    /// Width reserved to the left of a list item for its drawn marker.
+    ///
+    /// A fixed gutter rather than the width of the markup it replaces, so a
+    /// bullet, a `10.` and a checkbox all line up in the same column. Markdown's
+    /// own markers are different widths, which would leave the text ragged.
+    pub const GUTTER: f32 = 22.0;
+    /// Horizontal step per level of list nesting.
+    ///
+    /// Narrower than the sidebar's indent: the notes panel is much narrower
+    /// than the window, and three levels at 24px eats a third of it.
+    pub const LIST_INDENT: f32 = 16.0;
+    /// Deepest list nesting that still indents.
+    ///
+    /// The same ceiling the editor enforces on the text itself, so the drawn
+    /// indent and the document cannot disagree about how deep is too deep.
+    pub const MAX_DEPTH: usize = crate::markdown::MAX_DEPTH;
+    /// Radius of a bullet dot.
+    pub const BULLET_RADIUS: f32 = 2.6;
+    /// Side length of a checkbox.
+    pub const CHECKBOX: f32 = 12.0;
+    /// Thickness of a divider rule.
+    pub const RULE_WIDTH: f32 = 1.0;
+    /// Corner radius on a code block's background.
+    pub const CODE_ROUNDING: u8 = 4;
+    /// Padding added around a code block's background.
+    pub const CODE_PAD: f32 = 4.0;
+    /// Size of the language tag on a code block.
+    pub const CODE_TAG: f32 = 11.0;
+    /// Side of a formatting toolbar button.
+    pub const TOOLBAR_BUTTON: f32 = 24.0;
+    /// Text size inside a toolbar button.
+    pub const TOOLBAR_TEXT: f32 = 15.0;
     /// Height of one row in the sidebar or the folder listing.
     pub const ROW_HEIGHT: f32 = 30.0;
     /// Radius of the status dot.
@@ -123,6 +194,7 @@ pub fn status_color(status: &Status) -> Color32 {
 /// `all_styles_mut` covers both the light and dark style slots, so nothing
 /// changes if the OS theme flips underneath us.
 pub fn install(ctx: &egui::Context) {
+    ctx.set_fonts(fonts());
     ctx.all_styles_mut(|style| {
         style.visuals.dark_mode = true;
         style.visuals.panel_fill = color::PANEL;
@@ -164,6 +236,170 @@ pub fn install(ctx: &egui::Context) {
         style.spacing.icon_width = metric::COLLAPSE_ICON;
         style.spacing.icon_width_inner = metric::COLLAPSE_ICON * 0.55;
     });
+}
+
+/// The family name of the markdown body face, for [`egui::FontFamily::Name`].
+///
+/// Deliberately **not** `FontFamily::Proportional`. The panel chrome keeps
+/// egui's Ubuntu-Light, which is what the app has always looked like, and the
+/// bundled family is used only inside the markdown fields. A UI font distinct
+/// from a content font is an ordinary typographic distinction, and it means
+/// adding a bold weight did not have to restyle the whole interface.
+///
+/// There is no mixing *within* a run of text: regular and bold both come from
+/// Work Sans, so a bold word sits in the same family as the sentence round it.
+pub const BODY: &str = "trackcrab-body";
+
+/// The family name of the bold face, for [`egui::FontFamily::Name`].
+///
+/// A separate family rather than a weight on the existing one, because that is
+/// the only handle egui gives a `TextFormat`: a `FontId` names a family and a
+/// size, and nothing else.
+pub const BOLD: &str = "trackcrab-bold";
+
+/// The bundled font set.
+///
+/// egui ships **Ubuntu-Light and nothing else** for proportional text: no bold
+/// face, and no faux bold anywhere in epaint either, so `**bold**` is
+/// unreachable without adding a font. Work Sans is bundled at Regular and Bold
+/// (SIL Open Font License, see `assets/fonts/OFL.txt`): humanist like Ubuntu, so
+/// it is the smallest visual change that buys a real bold, and small enough that
+/// two faces cost under 400KB.
+///
+/// Italic is *not* bundled. `TextFormat::italics` is a real faux slant applied
+/// in the tessellator, so it costs nothing. Real italic faces exist in the same
+/// family and can be dropped in later if the slant disappoints; that would mean
+/// two more families here and two more arms in the lookup, and nothing else.
+fn fonts() -> egui::FontDefinitions {
+    use egui::FontFamily;
+
+    let mut fonts = egui::FontDefinitions::default();
+    for (name, bytes) in [
+        (
+            "WorkSans",
+            &include_bytes!("../../assets/fonts/WorkSans-Regular.ttf")[..],
+        ),
+        (
+            "WorkSans-Bold",
+            &include_bytes!("../../assets/fonts/WorkSans-Bold.ttf")[..],
+        ),
+    ] {
+        fonts.font_data.insert(
+            name.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
+    }
+
+    // `Proportional` is left exactly as egui built it, so every label, button
+    // and heading in the app keeps the Ubuntu-Light look it has always had. The
+    // two new families are additions, reached only from the markdown layouter.
+    //
+    // Both chains keep the existing fallbacks behind them, which matters for
+    // more than coverage: the burger is U+2630, which lives in
+    // `emoji-icon-font` and nowhere else bundled.
+    let fallbacks: Vec<String> = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+
+    for (family, face) in [(BODY, "WorkSans"), (BOLD, "WorkSans-Bold")] {
+        let mut chain = vec![face.to_owned()];
+        chain.extend(fallbacks.iter().cloned());
+        fonts
+            .families
+            .insert(FontFamily::Name(family.into()), chain);
+    }
+
+    fonts
+}
+
+/// Horizontal offset for a list item at a given nesting depth.
+///
+/// One function for both users: the layouter reserves this much space before the
+/// text, and the painter puts the marker in it. If the two computed it
+/// separately they could drift, and a bullet that does not line up with its own
+/// text is worse than no bullet at all.
+#[must_use]
+pub fn list_indent(depth: usize) -> f32 {
+    let depth = u8::try_from(depth.min(metric::MAX_DEPTH)).unwrap_or(u8::MAX);
+    f32::from(depth) * metric::LIST_INDENT
+}
+
+/// A `FontId` in the markdown body family.
+#[must_use]
+pub fn body_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(BODY.into()))
+}
+
+/// A `FontId` in the bold family.
+#[must_use]
+pub fn bold_font(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name(BOLD.into()))
+}
+
+/// Body text or dark text, whichever is readable on `background`.
+///
+/// Needed because a highlight colour can be **any hex the user types**. The
+/// named palette is tuned to keep light text legible, but nothing stops someone
+/// writing `==#ffffff|text==`, and light-on-white would make their own note
+/// unreadable. Choosing by the background's luminance means every colour works,
+/// including ones nobody anticipated.
+#[must_use]
+pub fn readable_on(background: Color32) -> Color32 {
+    // Whichever of the two actually wins on contrast, rather than a luminance
+    // threshold. A threshold has to guess where the crossover is, and it guesses
+    // wrong in the middle of the range: a mid pink like #d287c3 sits just under
+    // any sensible cutoff and so got light text, when dark text reads better on
+    // it. Measuring both costs nothing and cannot be wrong.
+    if contrast(color::CANVAS, background) >= contrast(color::TEXT, background) {
+        color::CANVAS
+    } else {
+        color::TEXT
+    }
+}
+
+/// WCAG contrast ratio, 1.0 for identical colours up to 21.0 for black on white.
+#[must_use]
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (x, y) = (relative_luminance(a), relative_luminance(b));
+    let (hi, lo) = if x > y { (x, y) } else { (y, x) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// WCAG relative luminance, the same computation `tests/theme.rs` asserts
+/// contrast ratios with.
+#[must_use]
+pub fn relative_luminance(colour: Color32) -> f32 {
+    let channel = |v: u8| {
+        let v = f32::from(v) / 255.0;
+        if v <= 0.039_28 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(colour.r()) + 0.7152 * channel(colour.g()) + 0.0722 * channel(colour.b())
+}
+
+/// The background a highlight is drawn in.
+#[must_use]
+pub fn mark_color(colour: crate::markdown::HighlightColor) -> Color32 {
+    use crate::markdown::{HighlightColor, Palette};
+    match colour {
+        HighlightColor::Default => color::mark::DEFAULT,
+        HighlightColor::Rgb([r, g, b]) => Color32::from_rgb(r, g, b),
+        HighlightColor::Named(name) => match name {
+            Palette::Yellow => color::mark::YELLOW,
+            Palette::Green => color::mark::GREEN,
+            Palette::Blue => color::mark::BLUE,
+            Palette::Pink => color::mark::PINK,
+            Palette::Purple => color::mark::PURPLE,
+            Palette::Orange => color::mark::ORANGE,
+            Palette::Red => color::mark::RED,
+            Palette::Grey => color::mark::GREY,
+        },
+    }
 }
 
 /// The dialog width to actually use, which is the preferred width unless the
